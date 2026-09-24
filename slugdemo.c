@@ -466,6 +466,9 @@ int main(int argc, char *argv[])
     while (!csys_close(&system)) {
         csys_update(&system);
 
+        cvk_fence_wait(&frames_pending[frame_id], &dev);
+        cvk_fence_reset(&frames_pending[frame_id], &dev);
+
         // Generate draws for the frame
         DrawBuffer *draw_buffer = draw_buffers + frame_id;
         uint32_t draw_count = pack_draws(state, draw_buffer);
@@ -479,9 +482,6 @@ int main(int argc, char *argv[])
             vkDeviceWaitIdle(dev.ct);
             ttf_buffers_dirty = false;
         }
-
-        cvk_fence_wait(&frames_pending[frame_id], &dev);
-        cvk_fence_reset(&frames_pending[frame_id], &dev);
 
         cvk_size const image_id = cvk_device_swapchain_nextImageID(&swapchain, &(cvk_device_swapchain_nextImageID_args){
             .device_logical = &dev,
