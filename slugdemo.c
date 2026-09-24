@@ -35,6 +35,14 @@ typedef struct GPUBuffer
     cvk_Memory      memory;
 } GPUBuffer;
 
+typedef struct DrawBuffer
+{
+    cvk_Buffer      buffer;
+    VkDeviceMemory  memory;
+    VkDeviceAddress address;
+    void            *map;
+} DrawBuffer;
+
 typedef struct PushConstants
 {
     vec2        view;
@@ -45,12 +53,13 @@ typedef struct PushConstants
     uint64_t    glyph_ptr;
 } PushConstants;
 
-static uint32_t pack_draws(const State *state, GPUGlyph *buffer)
+static uint32_t pack_draws(const State *state, DrawBuffer *buffer)
 {
     float height = ttf_get_font_height(state->text_size);
     vec2 pos = VEC2(20.0f, height);
     uint32_t count = 0;
 
+    GPUGlyph *ptr = buffer->map;
     for (uint32_t i = 0; i < state->input_count; ++i) {
         if (state->input[i] == '\n') {
             pos.x = 20.0f;
@@ -64,12 +73,12 @@ static uint32_t pack_draws(const State *state, GPUGlyph *buffer)
                 float left = pos.x + glyph->bearing.x * state->text_size;
                 float top = pos.y - glyph->bearing.y * state->text_size;
 
-                buffer->band_count = glyph->band_count;
-                buffer->band_offset = glyph->band_offset;
-                buffer->pos = VEC2(left, top);
-                buffer->min = glyph->min;
-                buffer->max = glyph->max;
-                buffer++;
+                ptr->band_count = glyph->band_count;
+                ptr->band_offset = glyph->band_offset;
+                ptr->pos = VEC2(left, top);
+                ptr->min = glyph->min;
+                ptr->max = glyph->max;
+                ptr++;
                 count++;
             }
             pos.x += glyph->advance * state->text_size;
@@ -232,7 +241,56 @@ static GPUBuffer create_staging(cvk_device_Physical *gpu, cvk_device_Logical *de
     return result;
 }
 
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+DrawBuffer create_draw_buffer(cvk_device_Physical *gpu,
+                              cvk_device_Logical *dev,
+                              cvk_Allocator *allocator,
+                              size_t size)
+{
+    cvk_Buffer buffer = cvk_buffer_create(&(cvk_buffer_create_args){
+        .device_physical = gpu,
+        .device_logical = dev,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .size = size,
+        .memory_flags = cvk_memory_HostCoherent | cvk_memory_HostVisible,
+        .allocator = allocator
+    });
+
+    VkMemoryAllocateInfo alloc_info = (VkMemoryAllocateInfo){
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &(VkMemoryAllocateFlagsInfoKHR){
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO_KHR,
+            .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR
+        },
+        .memoryTypeIndex = buffer.memory.kind,
+        .allocationSize = buffer.memory.requirements.size
+    };
+
+    VkDeviceMemory memory;
+    cvk_result_check(vkAllocateMemory(dev->ct, &alloc_info, allocator->gpu, &memory),
+        "Failed to allocate a block of GPU memory.");
+    cvk_result_check(vkBindBufferMemory(dev->ct, buffer.ct, memory, 0),
+        "Failed to bind a block of GPU memory.");
+
+    VkBufferDeviceAddressInfo address_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer.ct
+    };
+    VkDeviceAddress address = vkGetBufferDeviceAddress(dev->ct, &address_info);
+
+    void *map;
+    cvk_result_check(vkMapMemory(dev->ct, memory, 0, VK_WHOLE_SIZE, 0, &map),
+        "Failed to map a block of GPU memory.");
+
+    DrawBuffer result;
+    result.buffer = buffer;
+    result.memory = memory;
+    result.address = address;
+    result.map = map;
+
+    return result;
+}
+
+static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
     State *state = glfwGetWindowUserPointer(window);
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
@@ -266,11 +324,40 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     }
 }
 
-void character_callback(GLFWwindow* window, unsigned int codepoint)
+static void character_callback(GLFWwindow* window, unsigned int codepoint)
 {
     State *state = glfwGetWindowUserPointer(window);
     if (state->input_count < LEN(state->input))
         state->input[state->input_count++] = codepoint;
+}
+
+static void record_flush(cvk_command_Buffer *cb, GPUBuffer *staging, BDABuffer *points, BDABuffer *bands)
+{
+    size_t points_size = ttf_point_buffer_offset * sizeof(vec2);
+    size_t bands_size = ttf_band_buffer_offset * sizeof(uint32_t);
+    memcpy(staging->memory.data, ttf_point_buffer, points_size);
+    memcpy((char *)staging->memory.data + points_size, ttf_band_buffer, bands_size);
+
+    cvk_command_buffer_reset(cb, cvk_false);
+    cvk_command_buffer_begin(cb);
+
+    VkBufferCopy regions[2] = {
+        {
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = points_size
+        },
+        {
+            .srcOffset = points_size,
+            .dstOffset = 0,
+            .size = bands_size
+        }
+    };
+
+    vkCmdCopyBuffer(cb->ct, staging->buffer.ct, points->buffer.ct, 1, regions);
+    vkCmdCopyBuffer(cb->ct, staging->buffer.ct, bands->buffer.ct, 1, regions + 1);
+
+    cvk_command_buffer_end(cb);
 }
 
 int main(int argc, char *argv[])
@@ -353,14 +440,18 @@ int main(int argc, char *argv[])
         frames_pending[i] = cvk_fence_create(&dev, cvk_true, &instance.allocator);
     }
 
+    cvk_command_Buffer staging_cb = cvk_command_buffer_allocate(&(cvk_command_buffer_allocate_args){
+      .device_logical = &dev,
+      .command_pool   = &command_pool
+    });
+
     BDABuffer point_buffer = create_bda_buffer(&gpu, &dev, &instance.allocator, MB(3));
     BDABuffer band_buffer = create_bda_buffer(&gpu, &dev, &instance.allocator, MB(3));
 
-    BDABuffer draw_buffers[2] = {
-        create_bda_buffer(&gpu, &dev, &instance.allocator, MB(1)),
-        create_bda_buffer(&gpu, &dev, &instance.allocator, MB(1)),
+    DrawBuffer draw_buffers[2] = {
+        create_draw_buffer(&gpu, &dev, &instance.allocator, MB(1)),
+        create_draw_buffer(&gpu, &dev, &instance.allocator, MB(1)),
     };
-    GPUGlyph *pack_buffer = xmalloc(MB(1));
 
     GPUBuffer staging_buffer = create_staging(&gpu, &dev, &instance.allocator, MB(10));
 
@@ -375,6 +466,20 @@ int main(int argc, char *argv[])
     while (!csys_close(&system)) {
         csys_update(&system);
 
+        // Generate draws for the frame
+        DrawBuffer *draw_buffer = draw_buffers + frame_id;
+        uint32_t draw_count = pack_draws(state, draw_buffer);
+
+        // Flush buffers
+        if (ttf_buffers_dirty) {
+            record_flush(&staging_cb, &staging_buffer, &point_buffer, &band_buffer);
+            cvk_device_queue_submit(&queue, &(cvk_device_queue_submit_args){
+              .command_buffer = &staging_cb
+            });
+            vkDeviceWaitIdle(dev.ct);
+            ttf_buffers_dirty = false;
+        }
+
         cvk_fence_wait(&frames_pending[frame_id], &dev);
         cvk_fence_reset(&frames_pending[frame_id], &dev);
 
@@ -386,79 +491,6 @@ int main(int argc, char *argv[])
         cvk_command_Buffer *cb = &command_buffer[frame_id];
         cvk_command_buffer_reset(cb, cvk_false);
         cvk_command_buffer_begin(cb);
-
-        // Generate draws for the frame
-        uint32_t draw_count = pack_draws(state, pack_buffer);
-
-        // Flush buffers
-        size_t staging_offset = 0;
-        if (ttf_buffers_dirty) {
-            size_t points_size = ttf_point_buffer_offset * sizeof(vec2);
-            size_t bands_size = ttf_band_buffer_offset * sizeof(uint32_t);
-            memcpy(staging_buffer.memory.data, ttf_point_buffer, points_size);
-            memcpy((char *)staging_buffer.memory.data + points_size, ttf_band_buffer, bands_size);
-
-            cvk_command_buffer_sync(cb, &point_buffer.buffer, &(cvk_buffer_sync_args){
-                .stage_src = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .stage_trg = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                .access_src = VK_ACCESS_SHADER_READ_BIT,
-                .access_trg = VK_ACCESS_TRANSFER_WRITE_BIT
-            });
-            cvk_command_buffer_sync(cb, &band_buffer.buffer, &(cvk_buffer_sync_args){
-                .stage_src = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .stage_trg = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                .access_src = VK_ACCESS_SHADER_READ_BIT,
-                .access_trg = VK_ACCESS_TRANSFER_WRITE_BIT
-            });
-
-            VkBufferCopy regions[2] = {
-                {
-                    .srcOffset = 0,
-                    .dstOffset = 0,
-                    .size = points_size
-                },
-                {
-                    .srcOffset = points_size,
-                    .dstOffset = 0,
-                    .size = bands_size
-                }
-            };
-
-            vkCmdCopyBuffer(cb->ct, staging_buffer.buffer.ct, point_buffer.buffer.ct, 1, regions);
-            vkCmdCopyBuffer(cb->ct, staging_buffer.buffer.ct, band_buffer.buffer.ct, 1, regions + 1);
-
-            cvk_command_buffer_sync(cb, &point_buffer.buffer, &(cvk_buffer_sync_args){
-                .stage_src = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                .stage_trg = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .access_src = VK_ACCESS_TRANSFER_WRITE_BIT,
-                .access_trg = VK_ACCESS_SHADER_READ_BIT
-            });
-            cvk_command_buffer_sync(cb, &band_buffer.buffer, &(cvk_buffer_sync_args){
-                .stage_src = VK_PIPELINE_STAGE_TRANSFER_BIT,
-                .stage_trg = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                .access_src = VK_ACCESS_TRANSFER_WRITE_BIT,
-                .access_trg = VK_ACCESS_SHADER_READ_BIT
-            });
-
-            ttf_buffers_dirty = false;
-            staging_offset = points_size + bands_size;
-        }
-
-        // Flush frame data if needed
-        BDABuffer *draw_buffer = draw_buffers + frame_id;
-        if (draw_count) {
-            size_t draw_buffer_size = draw_count * sizeof(GPUGlyph);
-            memcpy((char *)staging_buffer.memory.data + staging_offset, pack_buffer, draw_buffer_size);
-
-            if (draw_count > 0) {
-                VkBufferCopy region = {
-                    .srcOffset = staging_offset,
-                    .dstOffset = 0,
-                    .size = draw_buffer_size
-                };
-                vkCmdCopyBuffer(cb->ct, staging_buffer.buffer.ct, draw_buffer->buffer.ct, 1, &region);
-            }
-        }
 
         cvk_command_image_handle_transition(cb, swapchain.images.ptr[image_id].ct, &(cvk_image_transition_args){
             .layout_old = VK_IMAGE_LAYOUT_UNDEFINED,
