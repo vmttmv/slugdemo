@@ -1,0 +1,6 @@
+[submodule "cvulkan"]
+	path = cvulkan
+	url = https://codeberg.org/heysokam/cvulkan.git
+[submodule "cdk"]
+	path = cdk
+	url = https://codeberg.org/heysokam/cdk.git
