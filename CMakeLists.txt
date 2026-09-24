@@ -1,18 +1,18 @@
 cmake_minimum_required(VERSION 3.28)
 
-find_package(Freetype)
-find_package(Vulkan REQUIRED COMPONENTS glslc)
-find_program(glslc_executable REQUIRED NAMES glslc HINTS Vulkan::glslc)
-
 set(CMAKE_C_COMPILER clang)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
-
 set(CMAKE_LINKER_TYPE LLD)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 project(slugdemo VERSION 0.0.1)
+
+find_package(Freetype)
+find_package(Vulkan REQUIRED COMPONENTS glslc)
+find_program(glslc_executable REQUIRED NAMES glslc HINTS Vulkan::glslc)
+
 enable_language(ASM_NASM C)
 
 add_subdirectory(cdk)
