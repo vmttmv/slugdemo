@@ -508,10 +508,10 @@ int main(int argc, char *argv[])
                 .offset = 0
             });
 
-                cvk_command_draw(cb, &(cvk_command_draw_args){
-                    .elements_len = 4,
-                    .instance_len = draw_count
-                });
+            cvk_command_draw(cb, &(cvk_command_draw_args){
+                .elements_len = 4,
+                .instance_len = draw_count
+            });
         }
         cvk_command_rendering_end(cb);
 
