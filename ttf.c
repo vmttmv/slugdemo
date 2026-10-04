@@ -155,7 +155,7 @@ const TTF_Glyph *ttf_load_glyph(TTF *ttf, uint32_t cp)
     if (error)
         ttf_die("FT_Outline_Decompose");
 
-    // Fixed band counts (and thus size)
+    // Fixed band counts
     uint32_t hband_count = 6;
     uint32_t vband_count = 6;
     float hband_size = (contour.max.y - contour.min.y) / (float)hband_count;
