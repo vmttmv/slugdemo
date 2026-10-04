@@ -237,6 +237,7 @@ const TTF_Glyph *ttf_load_glyph(TTF *ttf, uint32_t cp)
             band_data[indices_offset++] = vbands[i].curves[j].index + ttf->point_count;
     }
 
+    uint32_t band_offset = ttf->band_count;
     ttf_push_data(ttf, contour.points, contour.point_count, band_data, band_data_count);
 
     free(band_data);
@@ -251,7 +252,7 @@ const TTF_Glyph *ttf_load_glyph(TTF *ttf, uint32_t cp)
     const FT_Glyph_Metrics *metrics = &ttf->face->glyph->metrics;
 
     TTF_Glyph g;
-    g.band_offset = ttf->band_count;
+    g.band_offset = band_offset;
     g.band_count = (hband_count << 16) | vband_count;
     g.min = contour.min;
     g.max = contour.max;
