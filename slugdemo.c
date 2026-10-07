@@ -3,8 +3,9 @@
 
 #include <csys.h>
 #include <cvulkan.h>
+#include <cvulkan.h>
 
-#include "ttf.c"
+#include "ttf.h"
 
 #define MB(x)       ((x) << 20)
 #define LEN(x)      (sizeof((x))/sizeof(*(x)))
@@ -45,7 +46,7 @@ typedef struct DrawBuffer
 
 typedef struct PushConstants
 {
-    vec2        view;
+    TTF_vec2    view;
     uint32_t    color;
     float       size;
     uint64_t    band_ptr;
@@ -53,10 +54,19 @@ typedef struct PushConstants
     uint64_t    glyph_ptr;
 } PushConstants;
 
-static uint32_t pack_draws(const State *state, DrawBuffer *buffer)
+typedef struct GPUGlyph
 {
-    float height = ttf_get_font_height(state->text_size);
-    vec2 pos = VEC2(20.0f, height);
+    uint32_t    band_offset;
+    uint32_t    band_count;
+    TTF_vec2    min;
+    TTF_vec2    max;
+    TTF_vec2    pos;
+} GPUGlyph;
+
+static uint32_t pack_draws(TTF *ttf, const State *state, DrawBuffer *buffer)
+{
+    float height = ttf_get_height(ttf, state->text_size);
+    TTF_vec2 pos = TTF_VEC2(20.0f, height);
     uint32_t count = 0;
 
     GPUGlyph *ptr = buffer->map;
@@ -67,7 +77,7 @@ static uint32_t pack_draws(const State *state, DrawBuffer *buffer)
             continue;
         }
 
-        const Glyph *glyph = ttf_get_glyph(state->input[i]);
+        const TTF_Glyph *glyph = ttf_get_glyph(ttf, state->input[i]);
         if (glyph) {
             if (glyph->band_count) {
                 float left = pos.x + glyph->bearing.x * state->text_size;
@@ -75,7 +85,7 @@ static uint32_t pack_draws(const State *state, DrawBuffer *buffer)
 
                 ptr->band_count = glyph->band_count;
                 ptr->band_offset = glyph->band_offset;
-                ptr->pos = VEC2(left, top);
+                ptr->pos = TTF_VEC2(left, top);
                 ptr->min = glyph->min;
                 ptr->max = glyph->max;
                 ptr++;
@@ -331,12 +341,13 @@ static void character_callback(GLFWwindow* window, unsigned int codepoint)
         state->input[state->input_count++] = codepoint;
 }
 
-static void record_flush(cvk_command_Buffer *cb, GPUBuffer *staging, BDABuffer *points, BDABuffer *bands)
+static void record_flush(TTF *ttf, cvk_command_Buffer *cb, GPUBuffer *staging, BDABuffer *points, BDABuffer *bands)
 {
-    size_t points_size = ttf_point_buffer_offset * sizeof(vec2);
-    size_t bands_size = ttf_band_buffer_offset * sizeof(uint32_t);
-    memcpy(staging->memory.data, ttf_point_buffer, points_size);
-    memcpy((char *)staging->memory.data + points_size, ttf_band_buffer, bands_size);
+    size_t points_size = ttf->point_count * sizeof(TTF_vec2);
+    size_t bands_size = ttf->band_count * sizeof(uint32_t);
+
+    memcpy(staging->memory.data, ttf->points, points_size);
+    memcpy((char *)staging->memory.data + points_size, ttf->bands, bands_size);
 
     cvk_command_buffer_reset(cb, cvk_false);
     cvk_command_buffer_begin(cb);
@@ -368,9 +379,9 @@ int main(int argc, char *argv[])
     }
 
     const char *font_path = argv[1];
-    ttf_init(font_path);
+    TTF *ttf = ttf_create(font_path);
 
-    State *state = xmalloc(sizeof(*state));
+    State *state = malloc(sizeof(*state));
     state->text_size = 20.0f;
     state->text_color = 0xffffffff;
     state->input_count = 0;
@@ -456,7 +467,7 @@ int main(int argc, char *argv[])
     GPUBuffer staging_buffer = create_staging(&gpu, &dev, &instance.allocator, MB(10));
 
     uint32_t input_buffer_len = 0;
-    uint32_t *input_buffer = xmalloc(MB(1));
+    uint32_t *input_buffer = malloc(MB(1));
 
     //
     // Loop
@@ -471,16 +482,16 @@ int main(int argc, char *argv[])
 
         // Generate draws for the frame
         DrawBuffer *draw_buffer = draw_buffers + frame_id;
-        uint32_t draw_count = pack_draws(state, draw_buffer);
+        uint32_t draw_count = pack_draws(ttf, state, draw_buffer);
 
         // Flush buffers
-        if (ttf_buffers_dirty) {
-            record_flush(&staging_cb, &staging_buffer, &point_buffer, &band_buffer);
+        if (ttf->dirty) {
+            record_flush(ttf, &staging_cb, &staging_buffer, &point_buffer, &band_buffer);
             cvk_device_queue_submit(&queue, &(cvk_device_queue_submit_args){
               .command_buffer = &staging_cb
             });
             vkDeviceWaitIdle(dev.ct);
-            ttf_buffers_dirty = false;
+            ttf->dirty = false;
         }
 
         cvk_size const image_id = cvk_device_swapchain_nextImageID(&swapchain, &(cvk_device_swapchain_nextImageID_args){
@@ -524,7 +535,7 @@ int main(int argc, char *argv[])
         cvk_command_rendering_begin(cb, &(cvk_command_rendering_begin_args){ .rendering = &rendering });
         if (draw_count) {
             PushConstants pc = {
-                .view = VEC2(width, height),
+                .view = TTF_VEC2(width, height),
                 .color = state->text_color,
                 .size = state->text_size,
                 .band_ptr = band_buffer.address,

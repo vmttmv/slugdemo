@@ -9,16 +9,6 @@
 
 #define TTF_OCCUPANCY_MAX   0.7f
 
-#define TTF_MIN(a, b)       ((a)<(b) ? (a) : (b))
-#define TTF_MIN3(a, b, c)   TTF_MIN((a), TTF_MIN((b), (c)))
-#define TTF_MAX(a, b)       ((a)>(b) ? (a) : (b))
-#define TTF_MAX3(a, b, c)   TTF_MAX((a), TTF_MAX((b), (c)))
-
-#define TTF_VEC2(x, y)      (TTF_vec2){(x), (y)}
-#define TTF_VEC2S(x, y, s)  (TTF_vec2){(x)/(s), (y)/(s)}
-#define TTF_VEC2_MIN(a, b)  TTF_VEC2(TTF_MIN((a).x, (b).x), TTF_MIN((a).y, (b).y))
-#define TTF_VEC2_MAX(a, b)  TTF_VEC2(TTF_MAX((a).x, (b).x), TTF_MAX((a).y, (b).y))
-
 typedef struct TTF_Curve
 {
     uint32_t    index;
@@ -126,7 +116,7 @@ float ttf_get_height(const TTF *ttf, float size)
 const TTF_Glyph *ttf_load_glyph(TTF *ttf, uint32_t cp)
 {
     FT_UInt glyph_index = FT_Get_Char_Index(ttf->face, cp);
-    FT_Int32 flags = FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP | FT_LOAD_IGNORE_TRANSFORM;
+    FT_Int32 flags = FT_LOAD_NO_SCALE | FT_LOAD_NO_BITMAP | FT_LOAD_IGNORE_TRANSFORM;
     FT_Error error = FT_Load_Glyph(ttf->face, glyph_index, flags);
     if (error)
         ttf_die("FT_Load_Glyph");
@@ -266,17 +256,17 @@ const TTF_Glyph *ttf_load_glyph(TTF *ttf, uint32_t cp)
 void ttf_push_data(TTF *ttf, const TTF_vec2 *p, uint32_t p_count, const uint32_t *b, uint32_t b_count)
 {
     if (ttf->point_count + p_count > ttf->point_cap) {
-        ttf->point_cap = TTF_MAX(ttf->point_cap * 2u, p_count);
+        ttf->point_cap = TTF_MAX(ttf->point_cap * 2u, ttf->point_count + p_count);
         ttf->points = ttf_xrealloc(ttf->points, ttf->point_cap * sizeof(TTF_vec2));
     }
-    memcpy(ttf->points, p, p_count * sizeof(TTF_vec2));
+    memcpy(ttf->points + ttf->point_count, p, p_count * sizeof(TTF_vec2));
     ttf->point_count += p_count;
 
     if (ttf->band_count + b_count > ttf->band_cap) {
-        ttf->band_cap = TTF_MAX(ttf->band_cap * 2u, b_count);
+        ttf->band_cap = TTF_MAX(ttf->band_cap * 2u, ttf->band_count + b_count);
         ttf->bands = ttf_xrealloc(ttf->bands, ttf->band_cap * sizeof(uint32_t));
     }
-    memcpy(ttf->bands, b, b_count * sizeof(uint32_t));
+    memcpy(ttf->bands + ttf->band_count, b, b_count * sizeof(uint32_t));
     ttf->band_count += b_count;
     ttf->dirty = 1;
 }
@@ -322,6 +312,7 @@ const TTF_Glyph *ttf_lookup_insert(TTF_Lookup *l, const TTF_Glyph *glyph, uint32
 
     l->keys[idx] = cp;
     l->vals[idx] = *glyph;
+    l->count++;
     return l->vals + idx;
 }
 
@@ -345,6 +336,7 @@ void ttf_lookup_grow(TTF_Lookup *l)
             idx = (idx + 1) % new_cap;
         new_keys[idx] = key;
         new_vals[idx] = l->vals[i];
+        j++;
     }
 
     free(l->vals);

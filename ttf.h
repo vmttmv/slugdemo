@@ -5,6 +5,16 @@
 
 #include <stdint.h>
 
+#define TTF_MIN(a, b)       ((a)<(b) ? (a) : (b))
+#define TTF_MIN3(a, b, c)   TTF_MIN((a), TTF_MIN((b), (c)))
+#define TTF_MAX(a, b)       ((a)>(b) ? (a) : (b))
+#define TTF_MAX3(a, b, c)   TTF_MAX((a), TTF_MAX((b), (c)))
+
+#define TTF_VEC2(x, y)      (TTF_vec2){(x), (y)}
+#define TTF_VEC2S(x, y, s)  (TTF_vec2){(x)/(s), (y)/(s)}
+#define TTF_VEC2_MIN(a, b)  TTF_VEC2(TTF_MIN((a).x, (b).x), TTF_MIN((a).y, (b).y))
+#define TTF_VEC2_MAX(a, b)  TTF_VEC2(TTF_MAX((a).x, (b).x), TTF_MAX((a).y, (b).y))
+
 typedef struct TTF_vec2
 {
     float x, y;

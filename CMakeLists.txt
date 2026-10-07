@@ -45,7 +45,7 @@ add_custom_command(
 )
 add_custom_target(run_glslc DEPENDS ${vs_path_out} ${fs_path_out})
 set_property(SOURCE shader.s PROPERTY LANGUAGE ASM_NASM)
-add_executable(slugdemo shader.s slugdemo.c)
+add_executable(slugdemo shader.s slugdemo.c ttf.c)
 target_link_libraries(slugdemo cdk cvulkan Freetype::Freetype)
 target_include_directories(slugdemo PRIVATE ${CMAKE_BINARY_PATH})
 add_dependencies(slugdemo run_glslc)
